@@ -1,2 +1,4 @@
 .memsearch
-/Users/pala/Carga de Modelos /.memsearch/.index-state.json
+/target
+*.bmp
+.DS_Store
