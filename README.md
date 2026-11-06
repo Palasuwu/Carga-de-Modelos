@@ -116,12 +116,7 @@ cargo run --release -- --screenshot tunel.bmp --jump --simulate 1.5
 cargo run --release -- --bench 120
 ```
 
-## Integrantes y contribuciones
-
-- _(nombre)_: _(contribución)_
-
 ## Recursos externos y uso de IA
 
 - [minifb](https://crates.io/crates/minifb) para la ventana y la entrada, y [nalgebra-glm](https://crates.io/crates/nalgebra-glm) para los vectores y matrices.
-- El shader de nebulosa está basado en un shader inspirado en Balatro (`myShader.js`), portado a Rust.
-- Usamos asistencia de IA (Claude) para escribir parte del código; lo revisamos y podemos explicarlo.
+- El shader de nebulosa está basado en un shader inspirado en Balatro de un proyecto personal anterior (`myShader.js`), portado a Rust.
