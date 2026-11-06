@@ -17,7 +17,7 @@ mod sky;
 use std::env;
 use std::time::Instant;
 
-use minifb::{Key, KeyRepeat, MouseButton, MouseMode, Window, WindowOptions};
+use minifb::{Key, KeyRepeat, MouseButton, MouseMode, ScaleMode, Window, WindowOptions};
 
 use app::{Action, App, HEIGHT, Input, WIDTH};
 use bmp::write_bmp_file;
@@ -145,8 +145,13 @@ fn main() {
         return;
     }
 
-    let mut window = Window::new("Sistema Solar - Software Renderer", WIDTH, HEIGHT, WindowOptions::default())
+    // Ventana redimensionable: el boton verde (o Ctrl+Cmd+F) la pone en
+    // pantalla completa. Se renderiza siempre a WIDTH x HEIGHT y minifb lo
+    // escala conservando la proporcion (franjas negras si sobra espacio).
+    let window_options = WindowOptions { resize: true, scale_mode: ScaleMode::AspectRatioStretch, ..WindowOptions::default() };
+    let mut window = Window::new("Sistema Solar - Software Renderer", WIDTH, HEIGHT, window_options)
         .expect("No se pudo crear la ventana");
+    window.set_background_color(0, 0, 0);
     window.set_target_fps(60);
 
     let mut last = Instant::now();
@@ -192,7 +197,7 @@ fn main() {
                 input.actions.push(make());
             }
         }
-        input.mouse = window.get_mouse_pos(MouseMode::Discard);
+        input.mouse = framebuffer_mouse(&window);
         let is_down = window.get_mouse_down(MouseButton::Left);
         input.click = is_down && !was_down;
         was_down = is_down;
@@ -203,4 +208,18 @@ fn main() {
             .update_with_buffer(&fb.color, WIDTH, HEIGHT)
             .expect("No se pudo actualizar la ventana");
     }
+}
+
+/// Posicion del mouse en pixeles del framebuffer, aunque la ventana este
+/// escalada o en pantalla completa (deshace el escalado y las franjas negras).
+fn framebuffer_mouse(window: &Window) -> Option<(f32, f32)> {
+    let (mx, my) = window.get_unscaled_mouse_pos(MouseMode::Pass)?;
+    let (w, h) = window.get_size();
+    let scale = (w as f32 / WIDTH as f32).min(h as f32 / HEIGHT as f32);
+    if scale <= 0.0 {
+        return None;
+    }
+    let x = (mx - (w as f32 - WIDTH as f32 * scale) * 0.5) / scale;
+    let y = (my - (h as f32 - HEIGHT as f32 * scale) * 0.5) / scale;
+    (x >= 0.0 && y >= 0.0 && x < WIDTH as f32 && y < HEIGHT as f32).then_some((x, y))
 }

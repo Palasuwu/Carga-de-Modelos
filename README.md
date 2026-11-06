@@ -32,6 +32,7 @@ Hay que compilar en modo `--release`: en modo debug el renderizador es unas 20 v
 | `H` | Muestra u oculta los controles en pantalla |
 | `Tab` | Muestra u oculta el panel de detalles (FPS y contadores de triángulos) |
 | `Esc` | Salir |
+| `Ctrl` + `Cmd` + `F` / botón verde | Pantalla completa (la imagen se escala conservando la proporción) |
 
 ## Recorrido sugerido para la demo
 
@@ -120,3 +121,5 @@ cargo run --release -- --bench 120
 
 - [minifb](https://crates.io/crates/minifb) para la ventana y la entrada, y [nalgebra-glm](https://crates.io/crates/nalgebra-glm) para los vectores y matrices.
 - El shader de nebulosa está basado en un shader inspirado en Balatro de un proyecto personal anterior (`myShader.js`), portado a Rust.
+
+Claude para ver errores the phasing entre el planeta y la nave 
