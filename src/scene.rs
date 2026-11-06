@@ -11,8 +11,46 @@ use crate::math::approach;
 use crate::renderer::FragmentShader;
 use crate::shaders;
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum Kind {
+    Star,
+    Planet,
+    /// Agujero negro: al cruzarlo se viaja a la siguiente galaxia
+    Portal,
+}
+
+/// Forma de la malla. Las que no son esfera se generan deformando una
+/// icosfera (o con su propio generador, el toro) al cargar la galaxia.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Shape {
+    Sphere,
+    /// cubo redondeado (superelipsoide)
+    Cube,
+    /// dos esferas unidas por la cintura
+    Peanut,
+    /// picos de ruido "ridged"; (altura, semilla)
+    Spiky(f32, u32),
+    Torus,
+}
+
+impl Shape {
+    /// Que tanto sobresale la forma respecto al radio (para colisiones).
+    pub fn extent(&self) -> f32 {
+        match self {
+            Shape::Sphere => 1.0,
+            Shape::Cube => 1.1,
+            Shape::Peanut => 1.6,
+            Shape::Spiky(h, _) => 1.0 + h,
+            Shape::Torus => 1.45,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct Body {
     pub name: &'static str,
+    pub kind: Kind,
+    pub shape: Shape,
     pub radius: f32,
     pub orbit_radius: f32,
     /// radianes por segundo alrededor del padre
@@ -54,61 +92,40 @@ impl Body {
     }
 
     pub fn is_sun(&self) -> bool {
-        self.orbit_radius == 0.0
+        self.kind == Kind::Star
+    }
+
+    pub fn is_portal(&self) -> bool {
+        self.kind == Kind::Portal
+    }
+
+    /// Radio que la nave no puede atravesar.
+    pub fn collision_radius(&self) -> f32 {
+        self.radius * self.shape.extent()
     }
 }
 
-/// El sistema solar. Valores faciles de cambiar en vivo: radio, orbita,
-/// velocidades y parametros de los shaders.
-pub fn solar_system() -> Vec<Body> {
-    let base = Body {
-        name: "",
-        radius: 1.0,
-        orbit_radius: 0.0,
-        orbit_speed: 0.0,
-        orbit_phase: 0.0,
-        spin_speed: 0.0,
-        tilt: 0.0,
-        parent: None,
-        shader: shaders::sun_shader,
-        params: [1.0, 0.0, 0.0, 0.0],
-        has_ring: false,
-        warp_key: 0,
-        label_color: 0xffffff,
-    };
-    vec![
-        Body { name: "SOL", radius: 30.0, spin_speed: 0.03, warp_key: 0, label_color: 0xffc040, ..base },
+/// Valores por defecto para declarar cuerpos con `..Body::base()`.
+impl Body {
+    pub fn base() -> Body {
         Body {
-            name: "MAGMA", radius: 6.5, orbit_radius: 80.0, orbit_speed: 0.060, orbit_phase: 0.6,
-            spin_speed: 0.25, tilt: 0.1, shader: shaders::magma_shader, params: [1.6, 0.0, 0.0, 0.0],
-            warp_key: 1, label_color: 0xff6030, ..base
-        },
-        Body {
-            name: "VERDALIA", radius: 10.0, orbit_radius: 140.0, orbit_speed: 0.040, orbit_phase: 2.2,
-            spin_speed: 0.12, tilt: 0.4, shader: shaders::verdalia_shader, warp_key: 2,
-            label_color: 0x60c0ff, ..base
-        },
-        Body {
-            name: "LUNA", radius: 2.6, orbit_radius: 22.0, orbit_speed: 0.35, orbit_phase: 0.0,
-            spin_speed: 0.35, parent: Some(2), shader: shaders::moon_shader, warp_key: 6,
-            label_color: 0xc0c0c0, ..base
-        },
-        Body {
-            name: "DUNA", radius: 8.0, orbit_radius: 205.0, orbit_speed: 0.030, orbit_phase: 4.0,
-            spin_speed: 0.10, tilt: 0.2, shader: shaders::duna_shader, warp_key: 3,
-            label_color: 0xf0a060, ..base
-        },
-        Body {
-            name: "BANDUS", radius: 18.0, orbit_radius: 295.0, orbit_speed: 0.020, orbit_phase: 5.3,
-            spin_speed: 0.18, tilt: 0.35, shader: shaders::bandus_shader, has_ring: true,
-            warp_key: 4, label_color: 0xe0c090, ..base
-        },
-        Body {
-            name: "GLACIA", radius: 7.5, orbit_radius: 385.0, orbit_speed: 0.015, orbit_phase: 1.2,
-            spin_speed: 0.09, tilt: 0.25, shader: shaders::glacia_shader, warp_key: 5,
-            label_color: 0xa0e8ff, ..base
-        },
-    ]
+            name: "",
+            kind: Kind::Planet,
+            shape: Shape::Sphere,
+            radius: 1.0,
+            orbit_radius: 0.0,
+            orbit_speed: 0.0,
+            orbit_phase: 0.0,
+            spin_speed: 0.0,
+            tilt: 0.0,
+            parent: None,
+            shader: shaders::sun_shader,
+            params: [1.0, 1.0, 0.0, 0.0],
+            has_ring: false,
+            warp_key: 0,
+            label_color: 0xffffff,
+        }
+    }
 }
 
 #[derive(Default, Clone, Copy)]

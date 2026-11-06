@@ -121,3 +121,75 @@ pub fn ring(inner: f32, outer: f32, segments: u32) -> Mesh {
     }
     Mesh::new(vertices, indices)
 }
+
+/// Recalcula normales suaves sumando las normales de las caras vecinas.
+pub fn recompute_normals(mesh: &mut Mesh) {
+    for v in &mut mesh.vertices {
+        v.normal = Vec3::zeros();
+    }
+    for &[a, b, c] in &mesh.indices {
+        let (pa, pb, pc) = (
+            mesh.vertices[a as usize].position,
+            mesh.vertices[b as usize].position,
+            mesh.vertices[c as usize].position,
+        );
+        let n = (pb - pa).cross(&(pc - pa));
+        for i in [a, b, c] {
+            mesh.vertices[i as usize].normal += n;
+        }
+    }
+    for v in &mut mesh.vertices {
+        v.normal = v.normal.try_normalize(1e-12).unwrap_or(v.position.normalize());
+    }
+}
+
+/// Deformacion procedural de la geometria: mueve cada vertice de una
+/// icosfera con `f` y recalcula normales y esfera envolvente.
+pub fn deformed_sphere(subdivisions: u32, f: impl Fn(Vec3) -> Vec3) -> Mesh {
+    let base = icosphere(subdivisions);
+    let vertices = base
+        .vertices
+        .iter()
+        .map(|v| Vertex { position: f(v.position), ..*v })
+        .collect();
+    let mut mesh = Mesh::new(vertices, base.indices);
+    recompute_normals(&mut mesh);
+    mesh
+}
+
+/// Toro (dona) con radio mayor `major` y radio del tubo `minor`.
+/// `nu` segmentos alrededor del anillo y `nv` alrededor del tubo.
+pub fn torus(major: f32, minor: f32, nu: u32, nv: u32) -> Mesh {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    for i in 0..nu {
+        let u = i as f32 / nu as f32 * std::f32::consts::TAU;
+        let (su, cu) = u.sin_cos();
+        for j in 0..nv {
+            let v = j as f32 / nv as f32 * std::f32::consts::TAU;
+            let (sv, cv) = v.sin_cos();
+            let normal = Vec3::new(cu * cv, sv, su * cv);
+            let position = Vec3::new(cu * major, 0.0, su * major) + normal * minor;
+            vertices.push(Vertex { position, normal, color: Vec3::repeat(1.0), extra: 0.0 });
+        }
+    }
+    for i in 0..nu {
+        for j in 0..nv {
+            let a = i * nv + j;
+            let b = ((i + 1) % nu) * nv + j;
+            let c = ((i + 1) % nu) * nv + (j + 1) % nv;
+            let d = i * nv + (j + 1) % nv;
+            indices.push([a, d, c]);
+            indices.push([a, c, b]);
+        }
+    }
+    // Asegura el orden antihorario visto desde afuera del tubo
+    let mesh = Mesh::new(vertices, indices);
+    let [a, b, c] = mesh.indices[0];
+    let (pa, pb, pc) = (mesh.vertices[a as usize].position, mesh.vertices[b as usize].position, mesh.vertices[c as usize].position);
+    if (pb - pa).cross(&(pc - pa)).dot(&mesh.vertices[a as usize].normal) < 0.0 {
+        let indices = mesh.indices.iter().map(|&[a, b, c]| [a, c, b]).collect();
+        return Mesh::new(mesh.vertices, indices);
+    }
+    mesh
+}

@@ -10,42 +10,42 @@ use crate::math::smoothstep;
 use crate::noise::{fbm, mix_bits, perlin, unit, voronoi};
 use crate::renderer::{Fragment, Uniforms};
 
-const AMBIENT: f32 = 0.04;
+pub(crate) const AMBIENT: f32 = 0.04;
 
 #[inline]
-fn rgb(r: u8, g: u8, b: u8) -> Vec3 {
+pub(crate) fn rgb(r: u8, g: u8, b: u8) -> Vec3 {
     Vec3::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
 }
 
 #[inline]
-fn mix(a: Vec3, b: Vec3, t: f32) -> Vec3 {
+pub(crate) fn mix(a: Vec3, b: Vec3, t: f32) -> Vec3 {
     a + (b - a) * t.clamp(0.0, 1.0)
 }
 
 #[inline]
-fn light_dir(f: &Fragment, u: &Uniforms) -> Vec3 {
+pub(crate) fn light_dir(f: &Fragment, u: &Uniforms) -> Vec3 {
     (u.light_pos - f.world_pos).normalize()
 }
 
 #[inline]
-fn view_dir(f: &Fragment, u: &Uniforms) -> Vec3 {
+pub(crate) fn view_dir(f: &Fragment, u: &Uniforms) -> Vec3 {
     (u.camera_pos - f.world_pos).normalize()
 }
 
 /// Lambert: cuanta luz del sol recibe la superficie.
 #[inline]
-fn diffuse(f: &Fragment, u: &Uniforms) -> f32 {
+pub(crate) fn diffuse(f: &Fragment, u: &Uniforms) -> f32 {
     f.normal.dot(&light_dir(f, u)).max(0.0)
 }
 
 #[inline]
-fn lit(albedo: Vec3, f: &Fragment, u: &Uniforms) -> Vec3 {
+pub(crate) fn lit(albedo: Vec3, f: &Fragment, u: &Uniforms) -> Vec3 {
     albedo * (AMBIENT + diffuse(f, u) * (1.0 - AMBIENT))
 }
 
 /// Brillo especular de Blinn-Phong.
 #[inline]
-fn specular(f: &Fragment, u: &Uniforms, power: f32) -> f32 {
+pub(crate) fn specular(f: &Fragment, u: &Uniforms, power: f32) -> f32 {
     let l = light_dir(f, u);
     if f.normal.dot(&l) <= 0.0 {
         return 0.0;
@@ -56,7 +56,7 @@ fn specular(f: &Fragment, u: &Uniforms, power: f32) -> f32 {
 
 /// Borde iluminado tipo atmosfera (fresnel), solo del lado de dia.
 #[inline]
-fn atmosphere(f: &Fragment, u: &Uniforms, color: Vec3, strength: f32) -> Vec3 {
+pub(crate) fn atmosphere(f: &Fragment, u: &Uniforms, color: Vec3, strength: f32) -> Vec3 {
     let rim = (1.0 - f.normal.dot(&view_dir(f, u)).max(0.0)).powi(3);
     let day = smoothstep(-0.25, 0.4, f.normal.dot(&light_dir(f, u)));
     color * rim * day * strength
@@ -77,7 +77,7 @@ pub fn sky_shader(f: &Fragment, u: &Uniforms) -> Option<Vec3> {
 
 /// Superficie de plasma animada con dos capas de fBm que se desplazan en el
 /// tiempo, oscurecimiento hacia el borde (limb darkening). Es emisivo.
-/// params[0] = velocidad de la animacion.
+/// params[0] = velocidad de la animacion, params[1] = paleta.
 pub fn sun_shader(f: &Fragment, u: &Uniforms) -> Option<Vec3> {
     let p = f.local_pos.normalize();
     let t = u.time * u.params[0];
@@ -85,14 +85,18 @@ pub fn sun_shader(f: &Fragment, u: &Uniforms) -> Option<Vec3> {
     let n2 = fbm(p * 7.0 - Vec3::new(0.0, t * 0.3, t * 0.12), 3, 12);
     let heat = (0.55 + n1 * 1.1 + n2 * 0.45).clamp(0.0, 1.0);
 
-    let red = rgb(200, 40, 10);
-    let orange = rgb(255, 140, 20);
-    let yellow = rgb(255, 235, 150);
-    let color = if heat < 0.5 { mix(red, orange, heat * 2.0) } else { mix(orange, yellow, heat * 2.0 - 1.0) };
+    // params[1] elige la paleta: 0 gigante roja, 1 amarilla, 2 azul, 3 verde
+    let [cool, mid, hot] = match u.params[1] as i32 {
+        0 => [rgb(110, 8, 4), rgb(225, 50, 20), rgb(255, 150, 90)],
+        2 => [rgb(30, 60, 200), rgb(110, 165, 255), rgb(230, 245, 255)],
+        3 => [rgb(10, 110, 60), rgb(110, 225, 140), rgb(235, 255, 220)],
+        _ => [rgb(200, 40, 10), rgb(255, 140, 20), rgb(255, 235, 150)],
+    };
+    let color = if heat < 0.5 { mix(cool, mid, heat * 2.0) } else { mix(mid, hot, heat * 2.0 - 1.0) };
 
     let mu = f.normal.dot(&view_dir(f, u)).max(0.0);
     let limb = 0.55 + 0.45 * mu.sqrt();
-    Some(color * limb * 1.2 + rgb(255, 80, 0) * (1.0 - mu).powi(3) * 0.6)
+    Some(color * limb * 1.2 + mid * (1.0 - mu).powi(3) * 0.6)
 }
 
 // ---------------------------------------------------------------- Magma

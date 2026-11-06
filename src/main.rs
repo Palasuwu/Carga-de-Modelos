@@ -1,6 +1,8 @@
 mod app;
 mod bmp;
+mod exotic;
 mod framebuffer;
+mod galaxy;
 mod hud;
 mod line;
 mod math;
@@ -33,6 +35,8 @@ struct Options {
     bench: Option<u32>,
     fly: f32,
     boost: bool,
+    galaxy: Option<usize>,
+    jump: bool,
 }
 
 fn parse_args() -> Options {
@@ -46,6 +50,8 @@ fn parse_args() -> Options {
         bench: None,
         fly: 0.0,
         boost: false,
+        galaxy: None,
+        jump: false,
     };
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -59,6 +65,8 @@ fn parse_args() -> Options {
             "--bench" => o.bench = Some(num() as u32),
             "--fly" => o.fly = num(),
             "--boost" => o.boost = true,
+            "--galaxy" => o.galaxy = Some(num() as usize),
+            "--jump" => o.jump = true,
             _ => o.model_path = arg,
         }
     }
@@ -67,9 +75,19 @@ fn parse_args() -> Options {
 
 /// Modo sin ventana: simula unos segundos y guarda una imagen (o mide tiempos).
 /// Sirve para generar las capturas del README.
+fn app_ship_ahead(app: &App) -> nalgebra_glm::Vec3 {
+    app.ship_position()
+}
+
 fn run_headless(app: &mut App, fb: &mut Framebuffer, o: &Options) {
     let dt = 1.0 / 60.0;
     app.time = o.time;
+    if let Some(g) = o.galaxy {
+        app.set_galaxy(g);
+    }
+    if o.jump {
+        app.start_jump(app_ship_ahead(app));
+    }
     let mut first = Input::default();
     if let Some(k) = o.warp {
         first.actions.push(Action::Warp(k));
@@ -154,6 +172,7 @@ fn main() {
         let warp_keys = [
             (Key::Key0, 0), (Key::Key1, 1), (Key::Key2, 2), (Key::Key3, 3),
             (Key::Key4, 4), (Key::Key5, 5), (Key::Key6, 6),
+            (Key::Key7, 7), (Key::Key8, 8), (Key::Key9, 9),
         ];
         for (key, n) in warp_keys {
             if window.is_key_pressed(key, KeyRepeat::No) {

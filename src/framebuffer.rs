@@ -74,3 +74,30 @@ pub fn unpack_color(c: u32) -> Vec3 {
         (c & 0xff) as f32 / 255.0,
     )
 }
+
+impl Framebuffer {
+    /// Ejecuta `f(y, fila)` para cada fila de color, repartiendo bloques de
+    /// filas entre los hilos (cada hilo toma el siguiente bloque libre).
+    pub fn par_rows<F>(&mut self, f: F)
+    where
+        F: Fn(usize, &mut [u32]) + Sync,
+    {
+        const BLOCK: usize = 8;
+        let width = self.width;
+        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let blocks: Vec<(usize, &mut [u32])> = self.color.chunks_mut(width * BLOCK).enumerate().collect();
+        let queue = std::sync::Mutex::new(blocks);
+        let (f, queue) = (&f, &queue);
+        std::thread::scope(|s| {
+            for _ in 0..threads {
+                s.spawn(move || loop {
+                    let next = queue.lock().unwrap().pop();
+                    let Some((block, rows)) = next else { break };
+                    for (r, row) in rows.chunks_mut(width).enumerate() {
+                        f(block * BLOCK + r, row);
+                    }
+                });
+            }
+        });
+    }
+}
