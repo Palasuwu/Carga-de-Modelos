@@ -65,9 +65,12 @@ fn atmosphere(f: &Fragment, u: &Uniforms, color: Vec3, strength: f32) -> Vec3 {
 // ---------------------------------------------------------------- Cielo
 
 /// Esfera gigante del fondo: nebulosa + estrellas, sin iluminacion.
+/// params[0] = intensidad del efecto de velocidad (turbo),
+/// params[1..4] = direccion hacia donde mira la camara.
 pub fn sky_shader(f: &Fragment, u: &Uniforms) -> Option<Vec3> {
     let dir = f.local_pos.normalize();
-    Some(u.sky.map(|s| s.color(&dir, u.time)).unwrap_or_default())
+    let forward = Vec3::new(u.params[1], u.params[2], u.params[3]);
+    Some(u.sky.map(|s| s.color_warped(&dir, u.time, &forward, u.params[0])).unwrap_or_default())
 }
 
 // ---------------------------------------------------------------- Sol

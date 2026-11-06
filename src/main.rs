@@ -32,6 +32,7 @@ struct Options {
     simulate: f32,
     bench: Option<u32>,
     fly: f32,
+    boost: bool,
 }
 
 fn parse_args() -> Options {
@@ -44,6 +45,7 @@ fn parse_args() -> Options {
         simulate: 2.0,
         bench: None,
         fly: 0.0,
+        boost: false,
     };
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -56,6 +58,7 @@ fn parse_args() -> Options {
             "--simulate" => o.simulate = num(),
             "--bench" => o.bench = Some(num() as u32),
             "--fly" => o.fly = num(),
+            "--boost" => o.boost = true,
             _ => o.model_path = arg,
         }
     }
@@ -79,13 +82,17 @@ fn run_headless(app: &mut App, fb: &mut Framebuffer, o: &Options) {
     for f in 0..frames {
         let mut input = Input::default();
         input.ship.forward = (f as f32 * dt) < o.fly;
+        input.ship.boost = o.boost;
         app.update(dt, &input);
     }
 
     if let Some(n) = o.bench {
         let start = Instant::now();
+        let mut input = Input::default();
+        input.ship.forward = o.fly > 0.0;
+        input.ship.boost = o.boost;
         for _ in 0..n {
-            app.update(dt, &Input::default());
+            app.update(dt, &input);
             app.render(fb);
         }
         let ms = start.elapsed().as_secs_f64() * 1000.0 / n as f64;
@@ -153,10 +160,11 @@ fn main() {
                 input.actions.push(Action::Warp(n));
             }
         }
-        let toggles: [(Key, fn() -> Action); 5] = [
+        let toggles: [(Key, fn() -> Action); 6] = [
             (Key::M, || Action::ToggleMap),
             (Key::Enter, || Action::ToggleMap),
             (Key::H, || Action::ToggleHelp),
+            (Key::Tab, || Action::ToggleStats),
             (Key::L, || Action::ToggleLod),
             (Key::V, || Action::ToggleCulling),
         ];

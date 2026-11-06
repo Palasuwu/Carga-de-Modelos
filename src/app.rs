@@ -20,6 +20,8 @@ pub const HEIGHT: usize = 540;
 
 const BASE_FOV: f32 = 60.0;
 const WARP_FOV_KICK: f32 = 35.0;
+/// El turbo abre un poco el campo de vision para sentir mas velocidad.
+const BOOST_FOV_KICK: f32 = 12.0;
 const NEAR: f32 = 0.1;
 const FAR: f32 = 10_000.0;
 /// Radio de la esfera del cielo: contiene a todo el sistema solar.
@@ -40,6 +42,7 @@ pub enum Action {
     Warp(u8),
     ToggleMap,
     ToggleHelp,
+    ToggleStats,
     ToggleLod,
     ToggleCulling,
 }
@@ -88,6 +91,7 @@ pub struct App {
     sky: SkyBox,
     renderer: Renderer,
     show_help: bool,
+    show_stats: bool,
     lod_enabled: bool,
     local_body: Option<usize>,
     hover: Option<usize>,
@@ -118,7 +122,8 @@ impl App {
             ring_mesh: ring(1.35, 2.3, 160),
             sky: SkyBox::new(192, 0.0),
             renderer: Renderer::new(WIDTH, HEIGHT),
-            show_help: true,
+            show_help: false,
+            show_stats: false,
             lod_enabled: true,
             local_body: None,
             hover: None,
@@ -163,6 +168,7 @@ impl App {
                     }
                 }
                 Action::ToggleHelp => self.show_help = !self.show_help,
+                Action::ToggleStats => self.show_stats = !self.show_stats,
                 Action::ToggleLod => self.lod_enabled = !self.lod_enabled,
                 Action::ToggleCulling => self.renderer.frustum_culling = !self.renderer.frustum_culling,
             }
@@ -392,7 +398,7 @@ impl App {
             },
             None => 0.0,
         };
-        (eye, target, up, BASE_FOV + WARP_FOV_KICK * kick)
+        (eye, target, up, BASE_FOV + WARP_FOV_KICK * kick + BOOST_FOV_KICK * self.ship.boost)
     }
 
     fn lod_for(&self, radius: f32, distance: f32) -> usize {
@@ -467,7 +473,9 @@ impl App {
 
         // 3. Cielo al final: solo se sombrean los pixeles que quedaron vacios
         let sky_model = glm::scaling(&Vec3::repeat(SKY_RADIUS));
-        frame.draw(&self.spheres[3], base.with_model(sky_model), shaders::sky_shader, CullMode::None);
+        let look = (target - eye).normalize();
+        let sky_params = [self.ship.boost, look.x, look.y, look.z];
+        frame.draw(&self.spheres[3], base.with_model(sky_model).with_params(sky_params), shaders::sky_shader, CullMode::None);
 
         self.stats = frame.finish(fb);
 
@@ -605,9 +613,11 @@ impl App {
             format!("FRAGMENTOS {}K", s.fragments / 1000),
             format!("LOD {} (L)  CULLING {} (V)", on_off(self.lod_enabled), on_off(self.renderer.frustum_culling)),
         ];
-        hud::fill_rect(fb, 6, 6, 250, lines.len() as i32 * 11 + 8, Vec3::zeros(), 0.45);
-        for (k, line) in lines.iter().enumerate() {
-            hud::draw_text(fb, 12, 11 + k as i32 * 11, line, 1, if k == 0 { 0x80ff80 } else { 0xd0d8e8 });
+        if self.show_stats {
+            hud::fill_rect(fb, 6, 6, 250, lines.len() as i32 * 11 + 8, Vec3::zeros(), 0.45);
+            for (k, line) in lines.iter().enumerate() {
+                hud::draw_text(fb, 12, 11 + k as i32 * 11, line, 1, if k == 0 { 0x80ff80 } else { 0xd0d8e8 });
+            }
         }
 
         if self.map_blend > 0.5 {
@@ -638,13 +648,16 @@ impl App {
         if self.show_help {
             let help = [
                 "W/S O FLECHAS: ACELERAR / FRENAR   A/D: GIRAR   ESPACIO/C: SUBIR/BAJAR   SHIFT: TURBO",
-                "WARP: 1 MAGMA  2 VERDALIA  3 DUNA  4 BANDUS  5 GLACIA  6 LUNA  0 SOL   M: MAPA   H: AYUDA",
+                "WARP: 1 MAGMA  2 VERDALIA  3 DUNA  4 BANDUS  5 GLACIA  6 LUNA  0 SOL   M: MAPA   H/TAB: OCULTAR",
             ];
             hud::fill_rect(fb, 0, HEIGHT as i32 - 34, WIDTH as i32, 34, Vec3::zeros(), 0.45);
             for (k, line) in help.iter().enumerate() {
                 let x = (WIDTH as i32 - hud::text_width(line, 1)) / 2;
                 hud::draw_text(fb, x, HEIGHT as i32 - 28 + k as i32 * 13, line, 1, 0xe0e8ff);
             }
+        } else {
+            // Pista discreta para saber como abrir los paneles
+            hud::draw_text_shadow(fb, 10, HEIGHT as i32 - 16, "H: CONTROLES   TAB: DETALLES", 1, 0x8890a8);
         }
     }
 

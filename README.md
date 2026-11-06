@@ -28,7 +28,8 @@ Hay que compilar en modo `--release`: en modo debug el renderizador es unas 20 v
 | `M` / `Enter` | Abre o cierra el mapa del sistema. En el mapa, un clic en un planeta o en el espacio lleva la nave ahí |
 | `L` | Activa o desactiva los niveles de detalle (LOD) |
 | `V` | Activa o desactiva el descarte por frustum |
-| `H` | Muestra u oculta la ayuda |
+| `H` | Muestra u oculta los controles en pantalla |
+| `Tab` | Muestra u oculta el panel de detalles (FPS y contadores de triángulos) |
 | `Esc` | Salir |
 
 ## Recorrido sugerido para la demo
@@ -46,7 +47,7 @@ Cada objeto se dibuja con `frame.draw(malla, uniforms, shader, cull)`. `uniforms
 2. **Vertex shader:** transforma de modelo a mundo a vista a clip (`projection * view * model`) y prepara los datos que se interpolan (posición de mundo, normal, posición local y color).
 3. **Recorte** contra el plano cercano (un triángulo puede convertirse en dos), seguido de la división de perspectiva y la matriz de viewport.
 4. **Descarte de caras traseras** y de triángulos fuera de pantalla.
-5. **Rasterizado en paralelo:** la pantalla se divide en bandas de 8 filas y cada hilo procesa sus propias bandas. Para cada píxel se calculan las coordenadas baricéntricas y se hace la prueba de profundidad: el z-buffer guarda 1/w y lo más grande es lo más cercano. Luego se interpolan los datos con corrección de perspectiva y se llama al fragment shader.
+5. **Rasterizado en paralelo:** la pantalla se divide en bandas de 8 filas y los hilos van tomando bandas de una cola, así los núcleos rápidos hacen más trabajo. Para cada píxel se calculan las coordenadas baricéntricas y se hace la prueba de profundidad: el z-buffer guarda 1/w y lo más grande es lo más cercano. Luego se interpolan los datos con corrección de perspectiva y se llama al fragment shader.
 
 Las matrices `look_at`, `perspective` y `viewport` están escritas a mano en [src/math.rs](src/math.rs).
 
@@ -56,6 +57,7 @@ Las matrices `look_at`, `perspective` y `viewport` están escritas a mano en [sr
 - **Nave:** se carga desde `models/nave_espacial.obj` con los colores de su `.mtl`, con sombreado plano. Los motores (material `Brillo_Motor`) son emisivos.
 - **Cámara en tercera persona:** el objetivo de `look_at` es el centro de la nave y la cámara se mantiene a una distancia constante detrás de ella, siguiendo su orientación con un pequeño retraso.
 - **Cielo** ([src/sky.rs](src/sky.rs)): una esfera de radio 4000 que contiene todo el sistema, con un fragment shader sin iluminación. Es nuestro shader de nebulosa (`nebula.frag`) portado a CPU, más dos capas de estrellas que parpadean. La nebulosa es costosa, así que se hornea en un cubemap animado: se mezclan dos cuadros clave mientras el siguiente se calcula unas filas por frame.
+- **Efecto de turbo:** mientras se usa el turbo, el shader del cielo cambia. La nebulosa se deforma con ondas que viajan desde el punto de fuga, aparecen estelas de luz que salen del centro (carriles en coordenadas polares que se desplazan con el tiempo), los bordes se tiñen de azul y el FOV se abre un poco.
 - **Warp con "pantalla de carga":** al viajar, un iris se cierra sobre la nave con estelas de velocidad y el FOV se abre. Con la pantalla en negro la nave se teletransporta al lado iluminado del destino y el iris se vuelve a abrir. Nunca se cambia de escena.
 
 ## Características del menú que solicitamos evaluar
@@ -64,7 +66,7 @@ Las matrices `look_at`, `perspective` y `viewport` están escritas a mano en [sr
 |---|---|
 | Planetas distinguibles (Magma, Verdalia, Duna, Bandus, Glacia y la Luna) | Teclas `1`–`6` |
 | Shaders propios: sol, magma, verdalia, duna, bandus, anillos, glacia, luna, nave y cielo | [src/shaders.rs](src/shaders.rs) |
-| Shaders animados: plasma del sol, lava que pulsa, nubes de Verdalia, bandas de Bandus, nebulosa y estrellas | Cualquier vista |
+| Shaders animados: plasma del sol, lava que pulsa, nubes de Verdalia, bandas de Bandus, nebulosa, estrellas y estelas del turbo | Cualquier vista; `Shift` + `W` para el turbo |
 | Etapa propia de generación/subdivisión de geometría (icosfera) | `icosphere` en [src/mesh.rs](src/mesh.rs) |
 | Modo de control local (la nave acompaña al planeta en su órbita) | HUD: "ORBITA LOCAL" |
 | Aceleración, frenado y giro progresivos e independientes de los FPS | [src/scene.rs](src/scene.rs), `Ship::update` |
@@ -72,7 +74,7 @@ Las matrices `look_at`, `perspective` y `viewport` están escritas a mano en [sr
 | Descarte de objetos fuera de la vista | Contadores del HUD; compara con `V` |
 | Niveles de detalle según la distancia (20 a 20 480 triángulos) | Contadores del HUD; compara con `L` |
 
-Los contadores de la esquina superior izquierda muestran los triángulos enviados, los descartados por frustum, las caras traseras, los fuera de pantalla, los rasterizados y los fragmentos sombreados.
+El panel de detalles (`Tab`) muestra los triángulos enviados, los descartados por frustum, las caras traseras, los fuera de pantalla, los rasterizados y los fragmentos sombreados.
 
 ## Parámetros fáciles de cambiar en vivo
 

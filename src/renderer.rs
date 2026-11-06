@@ -8,11 +8,12 @@
 //!   5. Descarte de caras traseras y de triangulos fuera de pantalla.
 //! Los triangulos resultantes se guardan junto con el indice de su "draw call"
 //! (sus uniforms y su fragment shader). Al final (`Frame::finish`) se rasterizan:
-//!   6. La pantalla se divide en bandas horizontales y cada hilo procesa sus
-//!      bandas: coordenadas baricentricas, prueba de profundidad (z-buffer),
+//!   6. La pantalla se divide en bandas horizontales y los hilos van tomando
+//!      bandas de una cola: coordenadas baricentricas, prueba de profundidad (z-buffer),
 //!      interpolacion con correccion de perspectiva y fragment shader.
 //! Cada banda escribe solo en sus propias filas, asi que no hay conflictos.
 
+use std::sync::Mutex;
 use std::thread;
 
 use nalgebra_glm::{Mat3, Mat4, Vec3, Vec4};
@@ -366,25 +367,29 @@ impl<'r, 'a> Frame<'r, 'a> {
         let bins = &r.bins;
         let threads = r.threads.max(1);
 
-        let mut work: Vec<Vec<(usize, &mut [u32], &mut [f32])>> = (0..threads).map(|_| Vec::new()).collect();
-        let bands = fb
+        // Cola de bandas: cada hilo toma la siguiente banda libre. Asi los
+        // nucleos rapidos procesan mas bandas y nadie espera a los lentos
+        // (los Mac mezclan nucleos de rendimiento y de eficiencia).
+        // Se recorren de abajo hacia arriba con pop(), el orden no importa.
+        let queue: Vec<(usize, &mut [u32], &mut [f32])> = fb
             .color
             .chunks_mut(BAND_HEIGHT * width)
             .zip(fb.depth.chunks_mut(BAND_HEIGHT * width))
-            .enumerate();
-        for (b, (color, depth)) in bands {
-            if !bins[b].is_empty() {
-                work[b % threads].push((b, color, depth));
-            }
-        }
+            .enumerate()
+            .filter(|(b, _)| !bins[*b].is_empty())
+            .map(|(b, (color, depth))| (b, color, depth))
+            .collect();
+        let queue = Mutex::new(queue);
 
         let fragments: u64 = thread::scope(|s| {
-            let handles: Vec<_> = work
-                .into_iter()
-                .map(|bands| {
+            let handles: Vec<_> = (0..threads)
+                .map(|_| {
+                    let queue = &queue;
                     s.spawn(move || {
                         let mut count = 0;
-                        for (b, color, depth) in bands {
+                        loop {
+                            let next = queue.lock().unwrap().pop();
+                            let Some((b, color, depth)) = next else { break };
                             count += raster_band(tris, &bins[b], calls, b * BAND_HEIGHT, width, color, depth);
                         }
                         count

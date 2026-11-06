@@ -21,7 +21,7 @@ use std::thread;
 use nalgebra_glm::{Vec2, Vec3};
 
 use crate::math::smoothstep;
-use crate::noise::{hash3, unit};
+use crate::noise::{hash3, mix_bits, unit};
 
 // Constantes del shader original
 const SPIN_ROTATION: f32 = -2.0;
@@ -188,21 +188,121 @@ impl SkyBox {
         top + (bottom - top) * ty
     }
 
-    /// Color del cielo en la direccion `dir` (unitaria) en el instante `time`.
-    pub fn color(&self, dir: &Vec3, time: f32) -> Vec3 {
+    /// Nebulosa animada: mezcla de los dos cuadros clave.
+    fn nebula(&self, dir: &Vec3, time: f32) -> Vec3 {
         let (face, u, v) = face_uv(dir);
         let f = ((time - self.t_a) / KEYFRAME_INTERVAL).clamp(0.0, 1.0);
         let ca = self.sample_tex(&self.a, face, u, v);
         let cb = self.sample_tex(&self.b, face, u, v);
-        let nebula = ca + (cb - ca) * f;
+        ca + (cb - ca) * f
+    }
 
+    /// Las dos capas de estrellas en una direccion.
+    fn stars(dir: &Vec3, time: f32) -> Vec3 {
+        let (face, u, v) = face_uv(dir);
         // Cubemap "equi-angular": reparte las celdas de estrellas de forma pareja
         let k = 4.0 / std::f32::consts::PI;
         let (ea, eb) = (u.atan() * k, v.atan() * k);
         let small = star_layer(face, ea, eb, 340.0, 0.9935, 0.42, 0, time);
         let large = star_layer(face, ea, eb, 110.0, 0.9940, 0.30, 1, time);
-        nebula + small.sup(&large)
+        small.sup(&large)
     }
+
+    /// Color del cielo en la direccion `dir` (unitaria) en el instante `time`.
+    pub fn color(&self, dir: &Vec3, time: f32) -> Vec3 {
+        self.nebula(dir, time) + Self::stars(dir, time)
+    }
+
+    /// Cielo con efecto de velocidad (turbo). `forward` es hacia donde mira
+    /// la camara y `amount` (0..1) la intensidad del efecto.
+    ///
+    /// * Estelas: cada estrella se muestrea varias veces a lo largo del arco
+    ///   que va hacia el punto de fuga (`forward`) y se queda el maximo, asi
+    ///   cada estrella se estira en una linea que sale del centro. El largo
+    ///   crece con el angulo, como en un desenfoque de movimiento real.
+    /// * Tunel: la direccion con que se lee la nebulosa se desplaza con una
+    ///   onda que viaja hacia afuera con el tiempo, y se agregan anillos de
+    ///   luz que avanzan; los bordes se tinen de azul.
+    pub fn color_warped(&self, dir: &Vec3, time: f32, forward: &Vec3, amount: f32) -> Vec3 {
+        if amount < 0.01 {
+            return self.color(dir, time);
+        }
+        let c = dir.dot(forward).clamp(-1.0, 1.0);
+        let theta = c.acos(); // angulo respecto al punto de fuga
+        let side = (1.0 - c * c).sqrt(); // = sin(theta), sin otra funcion trigonometrica
+
+        // Una sola onda que viaja hacia afuera: deforma la nebulosa y sus
+        // crestas se ven como anillos de luz
+        let ripple = (theta * 12.0 - time * 12.0).sin();
+        let pull = amount * side * (0.22 + 0.07 * ripple);
+        let nebula_dir = (dir - forward * pull).normalize();
+        let mut nebula = self.nebula(&nebula_dir, time);
+        let tint = Vec3::new(1.0, 1.0, 1.0) + Vec3::new(-0.25, 0.05, 0.6) * (amount * side);
+        nebula = nebula.component_mul(&tint);
+        let crest = ripple.max(0.0);
+        let rings = crest * crest * crest * crest;
+        nebula += Vec3::new(0.04, 0.08, 0.18) * rings * amount * side;
+
+        // Coordenadas polares alrededor del punto de fuga: phi = angulo
+        // alrededor del eje, theta = distancia angular al centro
+        let helper = if forward.y.abs() < 0.9 { Vec3::y() } else { Vec3::x() };
+        let t1 = forward.cross(&helper).normalize();
+        let t2 = forward.cross(&t1);
+        let phi = dir.dot(&t2).atan2(dir.dot(&t1));
+        let fade_center = smoothstep(0.04, 0.35, theta);
+        let mut streaks = Vec3::zeros();
+        if fade_center > 0.0 {
+            let log_theta = theta.ln();
+            streaks = (streak_layer(phi, side, log_theta, time, 260.0, 0.22, 0)
+                + streak_layer(phi, side, log_theta, time, 140.0, 0.16, 1))
+                * (amount * fade_center);
+        }
+
+        // Las estrellas reales se atenuan un poco para que dominen las estelas
+        nebula + Self::stars(dir, time) * (1.0 - 0.5 * amount) + streaks
+    }
+}
+
+/// Estelas de velocidad. El cielo se divide en `lanes` carriles que salen
+/// del punto de fuga (por angulo `phi`); cada carril se corta en celdas a lo
+/// largo de `theta` en escala logaritmica, y la coordenada se desplaza con el
+/// tiempo, asi que cada estela viaja hacia afuera y se acelera al alejarse
+/// del centro (como cuando uno avanza muy rapido). Cada celda decide con un
+/// hash si tiene estela, su largo, velocidad y color.
+fn streak_layer(phi: f32, sin_theta: f32, log_theta: f32, time: f32, lanes: f32, density: f32, layer: i32) -> Vec3 {
+    let fp = (phi / std::f32::consts::TAU + 0.5) * lanes;
+    let lane = fp.floor();
+
+    // Ancho angular: la linea mide ~1.5 px sin importar que tan lejos del centro.
+    // La mayoria de los pixeles caen entre lineas y salen aqui, antes de los hash.
+    let lateral = (fp - lane - 0.5).abs() * std::f32::consts::TAU / lanes * sin_theta;
+    let line = 1.0 - smoothstep(0.0012, 0.0032, lateral);
+    if line <= 0.0 {
+        return Vec3::zeros();
+    }
+
+    let lane_id = lane as i32;
+    let lane_hash = unit(hash3(lane_id, layer, 0, 40));
+    let speed = 3.0 + 3.0 * lane_hash;
+    let r = log_theta * 5.0 - time * speed + lane_hash * 17.0;
+    let cell = r.floor();
+    let along = r - cell;
+    let cell_hash = hash3(lane_id, cell as i32, layer, 41);
+    if unit(cell_hash) > density {
+        return Vec3::zeros();
+    }
+    let length = 0.25 + 0.5 * unit(mix_bits(cell_hash));
+    if along > length {
+        return Vec3::zeros();
+    }
+    // Cola tenue, cabeza brillante (la cabeza va por delante, mas afuera)
+    let head = (along / length).powi(2);
+    let color = if unit(mix_bits(cell_hash ^ 0x5bd1)) < 0.6 {
+        Vec3::new(0.75, 0.88, 1.0)
+    } else {
+        Vec3::new(1.0, 0.85, 1.0)
+    };
+    color * head * line * 1.4
 }
 
 /// `get_star_layer` del shader original, en celdas sobre la cara del cubo.
