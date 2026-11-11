@@ -195,6 +195,16 @@ impl SkyBox {
         sky
     }
 
+    /// Libera las texturas del cielo (mientras se ve la atmosfera de un
+    /// planeta no hacen falta). Despues de esto el cielo no se puede usar:
+    /// hay que construir uno nuevo.
+    pub fn unload(&mut self) {
+        self.a = Vec::new();
+        self.b = Vec::new();
+        self.next = Vec::new();
+        self.clouds = Vec::new();
+    }
+
     pub fn tint(&self) -> Vec3 {
         self.style.tint
     }

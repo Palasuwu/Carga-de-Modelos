@@ -13,6 +13,7 @@ mod renderer;
 mod scene;
 mod shaders;
 mod sky;
+mod visit;
 
 use std::env;
 use std::time::Instant;
@@ -37,6 +38,7 @@ struct Options {
     boost: bool,
     galaxy: Option<usize>,
     jump: bool,
+    visit: Option<f32>,
 }
 
 fn parse_args() -> Options {
@@ -52,6 +54,7 @@ fn parse_args() -> Options {
         boost: false,
         galaxy: None,
         jump: false,
+        visit: None,
     };
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -67,6 +70,7 @@ fn parse_args() -> Options {
             "--boost" => o.boost = true,
             "--galaxy" => o.galaxy = Some(num() as usize),
             "--jump" => o.jump = true,
+            "--visit" => o.visit = Some(num()),
             _ => o.model_path = arg,
         }
     }
@@ -102,6 +106,14 @@ fn run_headless(app: &mut App, fb: &mut Framebuffer, o: &Options) {
         input.ship.forward = (f as f32 * dt) < o.fly;
         input.ship.boost = o.boost;
         app.update(dt, &input);
+    }
+
+    // Visita al planeta mas cercano, avanzada `--visit` segundos
+    if let Some(seconds) = o.visit {
+        app.debug_visit();
+        for _ in 0..(seconds / dt) as u32 {
+            app.update(dt, &Input::default());
+        }
     }
 
     if let Some(n) = o.bench {
@@ -184,7 +196,8 @@ fn main() {
                 input.actions.push(Action::Warp(n));
             }
         }
-        let toggles: [(Key, fn() -> Action); 6] = [
+        let toggles: [(Key, fn() -> Action); 7] = [
+            (Key::F, || Action::Visit),
             (Key::M, || Action::ToggleMap),
             (Key::Enter, || Action::ToggleMap),
             (Key::H, || Action::ToggleHelp),

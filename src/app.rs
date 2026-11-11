@@ -7,7 +7,7 @@ use std::thread::{self, JoinHandle};
 use nalgebra_glm::{Mat4, Vec3, Vec4};
 use nalgebra_glm as glm;
 
-use crate::framebuffer::{Framebuffer, pack_color};
+use crate::framebuffer::{Framebuffer, pack_color, unpack_color};
 use crate::hud;
 use crate::line::draw_line;
 use crate::math::{angle_diff, approach, ease_in_cubic, ease_out_cubic, lerp3, look_at, perspective, smoothstep, viewport};
@@ -17,6 +17,7 @@ use crate::renderer::{CullMode, RenderStats, Renderer, Uniforms};
 use crate::scene::{Ship, ShipInput};
 use crate::shaders;
 use crate::sky::hyperspace;
+use crate::visit::{self, Scene};
 
 pub const WIDTH: usize = 960;
 pub const HEIGHT: usize = 540;
@@ -47,6 +48,19 @@ const PORTAL_PULL: f32 = 22.0;
 /// Segundos que se muestra el nombre de la galaxia al llegar.
 const BANNER_TIME: f32 = 4.0;
 
+// Visita a la atmosfera de un planeta (burbuja + click)
+/// Turbo y entrada al tunel antes de la animacion.
+const VISIT_ENTER: f32 = 1.2;
+/// Fundido del tunel a la animacion, y de la animacion al aire del planeta.
+const VISIT_FADE: f32 = 0.7;
+/// Duracion minima del despegue; si el mundo tarda mas en cargar, sigue.
+const VISIT_LEAVE_MIN: f32 = 2.4;
+/// Fundido del despegue al mundo ya cargado.
+const VISIT_EXIT: f32 = 0.9;
+const VISIT_FOV_KICK: f32 = 30.0;
+const BUBBLE_W: f32 = 184.0;
+const BUBBLE_H: f32 = 44.0;
+
 const CLOSE_TIME: f32 = 0.55;
 const HOLD_TIME: f32 = 0.2;
 const OPEN_TIME: f32 = 0.6;
@@ -58,6 +72,8 @@ pub enum Action {
     ToggleStats,
     ToggleLod,
     ToggleCulling,
+    /// Entrar a ver la atmosfera del planeta cercano (igual que el click en la burbuja)
+    Visit,
 }
 
 #[derive(Default)]
@@ -129,6 +145,84 @@ impl Jump {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum VisitPhase {
+    /// Turbo: el cielo se estira y aparece el tunel
+    Enter,
+    /// Animacion de la atmosfera a pantalla completa (el mundo esta descargado)
+    Show,
+    /// La nave sale del planeta: es la pantalla de carga mientras el mundo
+    /// se vuelve a cargar en otro hilo
+    Leave,
+    /// El mundo ya esta cargado y aparece detras de la nave
+    Exit,
+}
+
+/// Visita a un planeta. Dos disparadores marcan la carga:
+///  1. al terminar `Enter` (pantalla cubierta por el tunel) se descarga el
+///     mundo, asi toda la maquina se dedica a la animacion;
+///  2. al terminar `Show` se lanza la recarga en otro hilo y se ve el despegue
+///     hasta que termina.
+///
+/// Como cada cambio ocurre con la pantalla cubierta, nunca se ve una carga.
+#[derive(Clone, Copy)]
+struct Visit {
+    phase: VisitPhase,
+    t: f32,
+    body: usize,
+    scene: Scene,
+    /// Cuanto duro el despegue (para continuar su animacion en el fundido)
+    leave_time: f32,
+}
+
+impl Visit {
+    /// Cuanto cubre el tunel la imagen (0..1).
+    fn tunnel(&self) -> f32 {
+        match self.phase {
+            VisitPhase::Enter => smoothstep(VISIT_ENTER * 0.35, VISIT_ENTER, self.t),
+            VisitPhase::Show => 1.0 - smoothstep(0.0, VISIT_FADE, self.t),
+            VisitPhase::Leave | VisitPhase::Exit => 0.0,
+        }
+    }
+
+    /// El mundo 3D no se dibuja (ni existe) durante la animacion y el despegue.
+    fn world_hidden(&self) -> bool {
+        matches!(self.phase, VisitPhase::Show | VisitPhase::Leave)
+    }
+
+    /// Cuanto se abre el campo de vision. En el despegue se abre poco para
+    /// que la nave se vea de cerca.
+    fn fov_kick(&self) -> f32 {
+        match self.phase {
+            VisitPhase::Enter | VisitPhase::Show => self.turbo(),
+            VisitPhase::Leave => 0.3,
+            VisitPhase::Exit => 0.3 * (1.0 - smoothstep(0.0, VISIT_EXIT, self.t)),
+        }
+    }
+
+    /// Intensidad del efecto de turbo sobre el cielo.
+    fn turbo(&self) -> f32 {
+        match self.phase {
+            VisitPhase::Enter => smoothstep(0.0, VISIT_ENTER * 0.5, self.t),
+            VisitPhase::Show | VisitPhase::Leave => 1.0,
+            VisitPhase::Exit => 1.0 - smoothstep(0.0, VISIT_EXIT, self.t),
+        }
+    }
+}
+
+/// Oscurece un color 0RGB (para desvanecer textos).
+fn dim_color(c: u32, k: f32) -> u32 {
+    let k = k.clamp(0.0, 1.0);
+    let f = |sh: u32| ((((c >> sh) & 0xff) as f32 * k) as u32) << sh;
+    f(16) | f(8) | f(0)
+}
+
+/// Sale un poco de mas y regresa: da el "pop" de la burbuja.
+fn ease_out_back(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0) - 1.0;
+    1.0 + 2.7 * t * t * t + 1.7 * t * t
+}
+
 pub struct App {
     pub time: f32,
     galaxy: Galaxy,
@@ -143,6 +237,15 @@ pub struct App {
     spheres: Vec<Mesh>,
     ring_mesh: Mesh,
     jump: Option<Jump>,
+    visit: Option<Visit>,
+    /// Recarga del mundo en segundo plano al salir de un planeta
+    visit_loader: Option<JoinHandle<Galaxy>>,
+    /// Planeta que muestra la burbuja y su animacion de aparicion (0..1)
+    bubble_body: Option<usize>,
+    bubble_k: f32,
+    bubble_hover: bool,
+    /// Buffer de media resolucion para las animaciones de atmosfera
+    low: Framebuffer,
     banner: f32,
     renderer: Renderer,
     show_help: bool,
@@ -177,6 +280,12 @@ impl App {
             spheres: (0..=MAX_LOD as u32).map(icosphere).collect(),
             ring_mesh: ring(1.35, 2.3, 160),
             jump: None,
+            visit: None,
+            visit_loader: None,
+            bubble_body: None,
+            bubble_k: 0.0,
+            bubble_hover: false,
+            low: Framebuffer::new(visit::LOW_W, visit::LOW_H),
             banner: BANNER_TIME,
             renderer: Renderer::new(WIDTH, HEIGHT),
             show_help: false,
@@ -215,15 +324,20 @@ impl App {
         for action in &input.actions {
             match action {
                 Action::Warp(key) => {
-                    if self.jump.is_some() {
+                    if self.jump.is_some() || self.visit.is_some() {
                         continue;
                     }
                     if let Some(i) = self.galaxy.bodies.iter().position(|b| b.warp_key == *key) {
                         self.start_warp(WarpTarget::Body(i));
                     }
                 }
+                Action::Visit => {
+                    if let Some(i) = self.visitable().filter(|_| self.free_flight()) {
+                        self.start_visit(i);
+                    }
+                }
                 Action::ToggleMap => {
-                    if self.transition.is_none() && self.jump.is_none() {
+                    if self.transition.is_none() && self.jump.is_none() && self.visit.is_none() {
                         self.map_open = !self.map_open;
                     }
                 }
@@ -236,6 +350,7 @@ impl App {
 
         self.update_transition(dt);
         self.update_jump(dt);
+        self.update_visit(dt, input);
         self.banner = (self.banner - dt).max(0.0);
 
         let goal = if self.map_open { 1.0 } else { 0.0 };
@@ -243,10 +358,12 @@ impl App {
         self.map_blend = if self.map_blend < goal { (self.map_blend + step).min(goal) } else { (self.map_blend - step).max(goal) };
 
         // La nave solo obedece en vuelo normal; en el mapa o en un warp flota
-        let controls = self.transition.is_none() && self.jump.is_none() && !self.map_open && self.map_blend < 0.01;
+        let controls = self.free_flight();
         let ship_input = if controls { input.ship } else { ShipInput::default() };
         let falling = matches!(self.jump.as_ref().map(|j| j.phase), Some(JumpPhase::Enter | JumpPhase::Tunnel));
-        if falling {
+        // Al entrar y al despegar de un planeta tambien
+        let burning = matches!(self.visit.map(|v| v.phase), Some(VisitPhase::Enter | VisitPhase::Leave));
+        if falling || burning {
             // Durante la caida los motores van a todo
             self.ship.thrust = 1.0;
             self.ship.boost = 1.0;
@@ -258,12 +375,155 @@ impl App {
             self.apply_portal_gravity(dt);
             self.apply_local_frame();
             self.apply_collisions();
-            self.check_portal();
+            if self.visit.is_none() {
+                self.check_portal();
+            }
         }
+        self.update_bubble(dt, input, controls);
         self.cam_yaw += angle_diff(self.ship.yaw, self.cam_yaw) * approach(4.0, dt);
 
         self.update_map_input(input);
-        self.galaxy.sky.update(self.time);
+        if !self.visit.is_some_and(|v| v.world_hidden()) {
+            self.galaxy.sky.update(self.time);
+        }
+    }
+
+    /// Vuelo normal: sin mapa, sin warp, sin viaje y sin visita en curso.
+    fn free_flight(&self) -> bool {
+        self.transition.is_none() && self.jump.is_none() && self.visit.is_none() && !self.map_open && self.map_blend < 0.01
+    }
+
+    // ------------------------------------------------------------ visitas
+
+    /// Cuerpo con animacion de atmosfera que esta lo bastante cerca de la nave.
+    fn visitable(&self) -> Option<usize> {
+        let mut best = None;
+        let mut best_d = f32::MAX;
+        for (i, b) in self.galaxy.bodies.iter().enumerate() {
+            if visit::scene_for(b.name).is_none() {
+                continue;
+            }
+            let surface = (self.ship.position - self.positions[i]).norm() - b.collision_radius();
+            let range = if b.is_sun() { 70.0 } else { b.radius * 2.5 + 20.0 };
+            if surface < range && surface < best_d {
+                best_d = surface;
+                best = Some(i);
+            }
+        }
+        best
+    }
+
+    fn start_visit(&mut self, body: usize) {
+        let Some(scene) = visit::scene_for(self.galaxy.bodies[body].name) else { return };
+        self.visit = Some(Visit { phase: VisitPhase::Enter, t: 0.0, body, scene, leave_time: 0.0 });
+        self.ship.velocity = Vec3::zeros();
+        self.bubble_body = None;
+        self.bubble_k = 0.0;
+        self.bubble_hover = false;
+    }
+
+    /// Para pruebas sin ventana: visita el cuerpo mas cercano sin importar la distancia.
+    pub fn debug_visit(&mut self) {
+        let nearest = (0..self.galaxy.bodies.len())
+            .filter(|&i| visit::scene_for(self.galaxy.bodies[i].name).is_some())
+            .min_by(|&a, &b| {
+                let d = |i: usize| (self.ship.position - self.positions[i]).norm() - self.galaxy.bodies[i].radius;
+                d(a).total_cmp(&d(b))
+            });
+        if let Some(i) = nearest {
+            self.start_visit(i);
+        }
+    }
+
+    fn update_visit(&mut self, dt: f32, input: &Input) {
+        let Some(v) = &mut self.visit else { return };
+        v.t += dt;
+        match v.phase {
+            VisitPhase::Enter => {
+                if v.t >= VISIT_ENTER {
+                    // Disparador 1: el tunel ya cubre todo, se descarga el mundo
+                    self.galaxy.unload();
+                    v.phase = VisitPhase::Show;
+                    v.t = 0.0;
+                }
+            }
+            VisitPhase::Show => {
+                let dur = v.scene.duration();
+                // Un click salta al final de la animacion
+                if input.click && v.t > VISIT_FADE && v.t < dur - VISIT_FADE {
+                    v.t = dur - VISIT_FADE;
+                }
+                if v.t >= dur {
+                    // Disparador 2: se recarga el mundo en otro hilo (con 1
+                    // hilo, para no quitarle nucleos al render del despegue)
+                    let index = self.galaxy.index;
+                    self.visit_loader = Some(thread::spawn(move || Galaxy::build(index, 0.0, 1)));
+                    v.phase = VisitPhase::Leave;
+                    v.t = 0.0;
+                }
+            }
+            VisitPhase::Leave => {
+                let ready = self.visit_loader.as_ref().is_some_and(|l| l.is_finished());
+                if v.t >= VISIT_LEAVE_MIN && ready {
+                    let mut galaxy = self.visit_loader.take().unwrap().join().expect("no se pudo recargar la galaxia");
+                    galaxy.sky.rebase(self.time);
+                    self.galaxy = galaxy;
+                    v.leave_time = v.t;
+                    v.phase = VisitPhase::Exit;
+                    v.t = 0.0;
+                }
+            }
+            VisitPhase::Exit => {
+                if v.t >= VISIT_EXIT {
+                    self.visit = None;
+                }
+            }
+        }
+    }
+
+    /// La burbuja aparece al acercarse a un planeta visitable y se puede
+    /// pulsar con el mouse.
+    fn update_bubble(&mut self, dt: f32, input: &Input, controls: bool) {
+        let candidate = if controls { self.visitable() } else { None };
+        match candidate {
+            Some(i) => {
+                if self.bubble_body != Some(i) {
+                    self.bubble_body = Some(i);
+                    self.bubble_k = 0.0;
+                }
+                self.bubble_k = (self.bubble_k + dt / 0.45).min(1.0);
+            }
+            None => {
+                self.bubble_k = (self.bubble_k - dt / 0.2).max(0.0);
+                if self.bubble_k == 0.0 {
+                    self.bubble_body = None;
+                }
+            }
+        }
+        self.bubble_hover = false;
+        let (Some(i), Some((cx, cy, _, _)), Some((mx, my))) = (candidate, self.bubble_rect(), input.mouse) else { return };
+        self.bubble_hover = (mx - cx).abs() < BUBBLE_W * 0.5 && (my - cy).abs() < BUBBLE_H * 0.5;
+        if self.bubble_hover && input.click && self.bubble_k > 0.5 {
+            self.start_visit(i);
+        }
+    }
+
+    /// Centro de la burbuja en pantalla y punto del planeta al que apunta.
+    fn bubble_rect(&self) -> Option<(f32, f32, f32, f32)> {
+        let i = self.bubble_body?;
+        let b = &self.galaxy.bodies[i];
+        let p = self.positions[i];
+        let (sx, _, _) = self.project(&p)?;
+        if !(-150.0..WIDTH as f32 + 150.0).contains(&sx) {
+            return None;
+        }
+        // Encima del planeta, segun el "arriba" de la camara
+        let up = Vec3::new(self.view[(1, 0)], self.view[(1, 1)], self.view[(1, 2)]);
+        let (ax, ay, _) = self.project(&(p + up * b.collision_radius() * 1.05))?;
+        let bob = (self.time * 3.0).sin() * 2.5;
+        let cx = ax.clamp(BUBBLE_W * 0.5 + 8.0, WIDTH as f32 - BUBBLE_W * 0.5 - 8.0);
+        let cy = (ay - 16.0 - BUBBLE_H * 0.5 + bob).clamp(BUBBLE_H * 0.5 + 60.0, HEIGHT as f32 - BUBBLE_H - 40.0);
+        Some((cx, cy, ax, ay))
     }
 
     /// Modo de control local: cerca de un planeta, la nave se mueve junto con
@@ -281,6 +541,10 @@ impl App {
                 best = surface;
                 self.local_body = Some(i);
             }
+        }
+        // Durante una visita la nave se queda junto al planeta visitado
+        if let Some(v) = &self.visit {
+            self.local_body = Some(v.body);
         }
         if let Some(i) = self.local_body {
             self.ship.position += self.positions[i] - self.prev_positions[i];
@@ -596,7 +860,8 @@ impl App {
             None => 0.0,
         };
         let jump = self.jump.as_ref().map(|j| j.alpha()).unwrap_or(0.0);
-        let fov = BASE_FOV + WARP_FOV_KICK * kick + BOOST_FOV_KICK * self.ship.boost + JUMP_FOV_KICK * jump;
+        let visit = self.visit.map(|v| v.fov_kick()).unwrap_or(0.0);
+        let fov = BASE_FOV + WARP_FOV_KICK * kick + BOOST_FOV_KICK * self.ship.boost + JUMP_FOV_KICK * jump + VISIT_FOV_KICK * visit;
         (eye, target, up, fov)
     }
 
@@ -647,11 +912,42 @@ impl App {
             params: [0.0; 4],
             sky: Some(&self.galaxy.sky),
         };
-        let jump_alpha = self.jump.as_ref().map(|j| j.alpha()).unwrap_or(0.0);
+        // Tunel (viaje entre galaxias o visita a un planeta) y efecto de turbo
+        let (tunnel_alpha, tunnel_tint, turbo) = match (&self.jump, &self.visit) {
+            (Some(j), _) => (j.alpha(), j.tint(), j.alpha()),
+            (None, Some(v)) => {
+                let label = unpack_color(self.galaxy.bodies[v.body].label_color);
+                (v.tunnel(), lerp3(&self.galaxy.sky.tint(), &label, 0.6), v.turbo())
+            }
+            (None, None) => (0.0, Vec3::zeros(), 0.0),
+        };
+
+        // Animacion de la atmosfera: reemplaza por completo a la escena 3D.
+        // Al final se funde al color del aire, donde empieza el despegue.
+        if let Some(v) = self.visit.filter(|v| v.phase == VisitPhase::Show) {
+            visit::render(v.scene, v.t, fb, &mut self.low);
+            self.hyperspace_overlay(fb, eye, target, up, fov, tunnel_alpha, tunnel_tint);
+            let dur = v.scene.duration();
+            let out = smoothstep(dur - VISIT_FADE, dur, v.t);
+            if out > 0.0 {
+                hud::fill_rect(fb, 0, 0, WIDTH as i32, HEIGHT as i32, visit::air_color(v.scene) * 0.85, out);
+            }
+            self.stats = RenderStats::default();
+            self.draw_visit_hud(fb, &v);
+            return;
+        }
+        // Despegue: (escena, tiempo, opacidad). En `Leave` es todo el fondo;
+        // en `Exit` se desvanece sobre el mundo recien cargado.
+        let leave = self.visit.and_then(|v| match v.phase {
+            VisitPhase::Leave => Some((v.scene, v.t, 1.0)),
+            VisitPhase::Exit => Some((v.scene, v.leave_time + v.t, 1.0 - smoothstep(0.0, VISIT_EXIT, v.t))),
+            _ => None,
+        });
+        let world_hidden = self.visit.is_some_and(|v| v.world_hidden());
 
         // Pase 1: el mundo. Si el tunel cubre toda la pantalla no hace falta.
         let mut stats = RenderStats::default();
-        if jump_alpha < 0.999 {
+        if tunnel_alpha < 0.999 && !world_hidden {
             let mut frame = self.renderer.begin();
 
             // Estrella, planetas y portal: para cada uno se cambia la matriz
@@ -684,15 +980,16 @@ impl App {
             // Cielo al final: solo se sombrean los pixeles que quedaron vacios
             let sky_model = glm::scaling(&Vec3::repeat(SKY_RADIUS));
             let look = (target - eye).normalize();
-            let sky_params = [self.ship.boost.max(jump_alpha), look.x, look.y, look.z];
+            let sky_params = [self.ship.boost.max(turbo), look.x, look.y, look.z];
             frame.draw(&self.spheres[3], base.with_model(sky_model).with_params(sky_params), shaders::sky_shader, CullMode::None);
             stats = frame.finish(fb);
             self.sun_glow(fb);
         }
 
         // Tunel hiperespacial encima de la escena
-        if let Some(jump) = &self.jump {
-            self.hyperspace_overlay(fb, eye, target, up, fov, jump.alpha(), jump.tint());
+        self.hyperspace_overlay(fb, eye, target, up, fov, tunnel_alpha, tunnel_tint);
+        if let Some((scene, t, alpha)) = leave {
+            visit::render_leave(scene, t, alpha, fb, &mut self.low);
         }
 
         // Pase 2: la nave, siempre encima del mundo. El buffer de profundidad
@@ -921,8 +1218,16 @@ impl App {
             hud::draw_text_shadow(fb, x, 46, &text, 1, 0x60ffb0);
         }
 
+        self.draw_bubble(fb);
+        if let Some(v) = self.visit.filter(|v| v.phase == VisitPhase::Leave) {
+            let text = format!("SALIENDO DE {}", self.galaxy.bodies[v.body].name);
+            let k = smoothstep(0.0, 0.5, v.t);
+            let x = (WIDTH as i32 - hud::text_width(&text, 2)) / 2;
+            hud::draw_text_shadow(fb, x, HEIGHT as i32 - 60, &text, 2, dim_color(self.galaxy.bodies[v.body].label_color, k));
+        }
+
         // Nombre de la galaxia al llegar, se desvanece
-        if self.banner > 0.0 && self.jump.as_ref().is_none_or(|j| j.phase == JumpPhase::Exit) {
+        if self.banner > 0.0 && self.bubble_k <= 0.0 && self.visit.is_none() && self.jump.as_ref().is_none_or(|j| j.phase == JumpPhase::Exit) {
             let k = smoothstep(0.0, 1.0, self.banner).min(1.0);
             let title = self.galaxy.name;
             let sub = format!("GALAXIA {} DE {}", self.galaxy.index + 1, galaxy::GALAXY_COUNT);
@@ -942,7 +1247,7 @@ impl App {
             let warp: Vec<String> = keys.iter().map(|(k, n)| format!("{} {}", k, n)).collect();
             let line2 = format!("WARP: {}   M: MAPA", warp.join("  "));
             let help = [
-                "W/S O FLECHAS: ACELERAR / FRENAR   A/D: GIRAR   ESPACIO/C: SUBIR/BAJAR   SHIFT: TURBO   H/TAB: OCULTAR",
+                "W/S O FLECHAS: ACELERAR / FRENAR   A/D: GIRAR   ESPACIO/C: SUBIR/BAJAR   SHIFT: TURBO   F: EXPLORAR   H: OCULTAR",
                 line2.as_str(),
             ];
             hud::fill_rect(fb, 0, HEIGHT as i32 - 34, WIDTH as i32, 34, Vec3::zeros(), 0.45);
@@ -954,6 +1259,58 @@ impl App {
             // Pista discreta para saber como abrir los paneles
             hud::draw_text_shadow(fb, 10, HEIGHT as i32 - 16, "H: CONTROLES   TAB: DETALLES", 1, 0x8890a8);
         }
+    }
+
+    /// Burbuja sobre el planeta cercano: "EXPLORAR". Aparece con un pequeno
+    /// rebote y se ilumina cuando el mouse esta encima.
+    fn draw_bubble(&self, fb: &mut Framebuffer) {
+        if self.bubble_k <= 0.0 {
+            return;
+        }
+        let (Some(i), Some((cx, cy, ax, ay))) = (self.bubble_body, self.bubble_rect()) else { return };
+        let b = &self.galaxy.bodies[i];
+        let s = ease_out_back(self.bubble_k) * if self.bubble_hover { 1.06 } else { 1.0 };
+        let accent = unpack_color(b.label_color);
+        let fill = if self.bubble_hover { lerp3(&Vec3::new(0.06, 0.09, 0.16), &accent, 0.25) } else { Vec3::new(0.04, 0.06, 0.12) };
+        let border = if self.bubble_hover { Vec3::repeat(1.0) } else { accent };
+        let tip = (ay - 4.0).min(cy + BUBBLE_H * 0.5 * s + 14.0);
+        hud::bubble(fb, cx, cy, BUBBLE_W * s, BUBBLE_H * s, (ax.clamp(cx - 60.0, cx + 60.0), tip), fill, border, self.bubble_k.min(1.0));
+        if self.bubble_k < 0.8 {
+            return;
+        }
+        // Icono: el planeta con su atmosfera
+        let (ix, iy) = (cx - BUBBLE_W * 0.5 + 24.0, cy);
+        hud::fill_circle(fb, ix, iy, 13.0, accent, 0.35);
+        hud::fill_circle(fb, ix, iy, 9.0, accent, 1.0);
+        hud::fill_circle(fb, ix - 3.0, iy - 3.0, 3.0, Vec3::repeat(1.0), 0.45);
+        let tx = (cx - BUBBLE_W * 0.5 + 46.0) as i32;
+        hud::draw_text(fb, tx, cy as i32 - 15, "EXPLORAR", 2, 0xffffff);
+        let sub = format!("{} - CLICK / F", b.name);
+        hud::draw_text(fb, tx, cy as i32 + 5, &sub, 1, pack_color(&lerp3(&accent, &Vec3::repeat(1.0), 0.35)));
+    }
+
+    /// Textos y barras de cine sobre la animacion de la atmosfera.
+    fn draw_visit_hud(&self, fb: &mut Framebuffer, v: &Visit) {
+        let dur = v.scene.duration();
+        let b = &self.galaxy.bodies[v.body];
+        let bars = (46.0 * smoothstep(0.0, 0.9, v.t)) as i32;
+        hud::fill_rect(fb, 0, 0, WIDTH as i32, bars, Vec3::zeros(), 1.0);
+        hud::fill_rect(fb, 0, HEIGHT as i32 - bars, WIDTH as i32, bars, Vec3::zeros(), 1.0);
+
+        // Solo el nombre del planeta: entra, se queda unos segundos y se va
+        let k = smoothstep(0.5, 1.3, v.t) * (1.0 - smoothstep(4.5, 5.5, v.t));
+        if k > 0.01 {
+            let slide = ((1.0 - smoothstep(0.5, 1.3, v.t)) * 20.0) as i32;
+            hud::draw_text_shadow(fb, 40 - slide, 70, b.name, 4, dim_color(b.label_color, k));
+        }
+
+        // Barra de progreso y como salir
+        let y = HEIGHT as i32 - bars + 20;
+        let w = WIDTH as i32 - 80;
+        hud::fill_rect(fb, 40, y, w, 2, Vec3::repeat(0.25), 1.0);
+        hud::fill_rect(fb, 40, y, (w as f32 * (v.t / dur).clamp(0.0, 1.0)) as i32, 2, unpack_color(b.label_color), 1.0);
+        let hint = "CLICK: VOLVER A LA NAVE";
+        hud::draw_text(fb, WIDTH as i32 - 40 - hud::text_width(hint, 1), y + 8, hint, 1, 0x8890a8);
     }
 
     fn draw_transition(&self, fb: &mut Framebuffer) {

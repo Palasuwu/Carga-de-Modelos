@@ -40,6 +40,16 @@ impl Galaxy {
         Galaxy { index, name: name(index), sky: SkyBox::new(style(index), time, threads), bodies, shape_meshes }
     }
 
+    /// Descarga lo pesado (cielo horneado y mallas deformadas). Quedan los
+    /// datos de los cuerpos para seguir calculando sus orbitas. Para volver a
+    /// dibujarla hay que reconstruirla con `Galaxy::build`.
+    pub fn unload(&mut self) {
+        self.sky.unload();
+        for meshes in &mut self.shape_meshes {
+            *meshes = None;
+        }
+    }
+
     pub fn next_index(&self) -> usize {
         (self.index + 1) % GALAXY_COUNT
     }

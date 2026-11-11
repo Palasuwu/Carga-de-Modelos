@@ -31,6 +31,7 @@ Hay que compilar en modo `--release`: en modo debug el renderizador es unas 20 v
 | `V` | Activa o desactiva el descarte por frustum |
 | `H` | Muestra u oculta los controles en pantalla |
 | `Tab` | Muestra u oculta el panel de detalles (FPS y contadores de triángulos) |
+| `F` o clic en la burbuja | Explorar la atmósfera del planeta o estrella cercana |
 | `Esc` | Salir |
 | `Ctrl` + `Cmd` + `F` / botón verde | Pantalla completa (la imagen se escala conservando la proporción) |
 
@@ -62,6 +63,43 @@ Las matrices `look_at`, `perspective` y `viewport` están escritas a mano en [sr
 - **Cielo** ([src/sky.rs](src/sky.rs)): una esfera de radio 4000 que contiene todo el sistema, con un fragment shader sin iluminación. Es nuestro shader de nebulosa (`nebula.frag`) portado a CPU, más dos capas de estrellas que parpadean. La nebulosa es costosa, así que se hornea en un cubemap animado: se mezclan dos cuadros clave mientras el siguiente se calcula unas filas por frame.
 - **Efecto de turbo:** mientras se usa el turbo, el shader del cielo cambia. La nebulosa se deforma con ondas que viajan desde el punto de fuga, aparecen estelas de luz que salen del centro (carriles en coordenadas polares que se desplazan con el tiempo), los bordes se tiñen de azul y el FOV se abre un poco.
 - **Warp con "pantalla de carga":** al viajar, un iris se cierra sobre la nave con estelas de velocidad y el FOV se abre. Con la pantalla en negro la nave se teletransporta al lado iluminado del destino y el iris se vuelve a abrir. Nunca se cambia de escena.
+
+## Explorar la atmósfera de un planeta
+
+En cualquier galaxia, al acercarse a un planeta o a la estrella aparece sobre él una burbuja que dice **EXPLORAR**. Con un clic en la burbuja (o la tecla `F`) la nave entra con el turbo y se ve una animación corta (10 a 11 segundos) de ese mundo, solo con su nombre en pantalla. Un clic durante la animación la salta. El portal no tiene animación.
+
+| Galaxia | Cuerpo | Animación |
+|---|---|---|
+| Vía Solar | Sol | Gránulos de plasma, protuberancias y una eyección de masa coronal |
+| | Magma | Volcán en erupción, ríos de lava y rayos en la nube de ceniza |
+| | Verdalia | Vuelo sobre el océano y las islas, con nubes y la luna de día |
+| | Luna | Cráteres sin atmósfera, Verdalia saliendo por el horizonte y un meteorito |
+| | Duna | Tormenta de arena que se cierra sobre las dunas |
+| | Bandus | Bandas de gas, un vórtice, relámpagos en la capa profunda y el anillo en el cielo |
+| | Glacia | Aurora, nevada y hielo que refleja la aurora |
+| Nebulosa Violeta | Estrella Azul | La superficie de la estrella en azul |
+| | Cubix | Ciudad de bloques de neón que suben y bajan |
+| | Espejo | Mar de metal líquido que refleja la nebulosa, con gotas de cromo flotando |
+| | Toroide | Suelo de caramelo, chispas de colores y el resto del toro como un arco en el cielo |
+| | Cristal | Suelo de facetas y agujas de cristal en el horizonte |
+| Jardín Esmeralda | Estrella Verde | La superficie de la estrella en verde |
+| | Cacahuate | Selva vista desde las copas, con el otro lóbulo del planeta en el cielo |
+| | Ojo | Un ojo gigante que sigue a la cámara y parpadea, sobre un suelo con venas que laten |
+| | Burbuja | Burbujas de jabón sobre un mar iridiscente |
+| | Coral | Arrecife bajo el agua: luz sobre la arena, corales que laten, algas y peces |
+| Abismo Carmesí | Gigante Roja | La superficie de la estrella en rojo, con gránulos más grandes |
+| | Vacío | Pasillo pintado con el shader del espacio, hacia un sol negro |
+| | Tablero | Tablero de ajedrez infinito con peones y un sol retro de franjas |
+| | Erizo | Agujas de roca con la punta incandescente frente a la gigante roja |
+| | Halo | Vuelo por la cara interna del anillo de plasma, que se curva y cruza el cielo |
+
+Cada animación es un shader de pantalla completa en [src/visit.rs](src/visit.rs): por cada píxel se lanza un rayo desde una cámara que vuela sobre la superficie y se intersecta con el suelo o con capas de nubes. Se calcula a media resolución en paralelo y se escala con interpolación bilineal.
+
+La visita nunca muestra una carga, porque cada cambio ocurre con la pantalla cubierta:
+
+1. **Clic en la burbuja:** turbo y túnel. Cuando el túnel cubre toda la pantalla se descarga el mundo (cielo horneado y mallas), así toda la máquina se dedica a la animación.
+2. **Fin de la animación:** el mundo se vuelve a cargar en otro hilo mientras se ve a la nave saliendo del planeta. Ese despegue es la pantalla de carga: es barato y dura lo que tarde la carga (mínimo 2.4 segundos).
+3. **Mundo listo:** el despegue se desvanece sobre el mundo ya cargado.
 
 ## Galaxias y portales ([src/galaxy.rs](src/galaxy.rs))
 
@@ -113,6 +151,7 @@ cargo run --release -- --screenshot mapa.bmp --map
 # Otra galaxia (0 a 3) y la animacion del portal
 cargo run --release -- --screenshot g3.bmp --galaxy 2 --warp 2
 cargo run --release -- --screenshot tunel.bmp --jump --simulate 1.5
+cargo run --release -- --screenshot magma.bmp --warp 1 --visit 6   # animación de Magma a los 4.8 s
 # Medir el tiempo por frame
 cargo run --release -- --bench 120
 ```
@@ -122,4 +161,5 @@ cargo run --release -- --bench 120
 - [minifb](https://crates.io/crates/minifb) para la ventana y la entrada, y [nalgebra-glm](https://crates.io/crates/nalgebra-glm) para los vectores y matrices.
 - El shader de nebulosa está basado en un shader inspirado en Balatro de un proyecto personal anterior (`myShader.js`), portado a Rust.
 
-Claude para ver errores the phasing entre el planeta y la nave 
+Claude para ver errores the phasing entre el planeta y la nave . 
+Debugeo de tiempos de carga en animaciones de exploracion , antes los hilos crasheaban :( pero ya no c: 

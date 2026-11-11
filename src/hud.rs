@@ -173,3 +173,46 @@ pub fn iris(fb: &mut Framebuffer, cx: f32, cy: f32, radius: f32, time: f32) {
         }
     }
 }
+
+/// Disco relleno con borde suavizado.
+pub fn fill_circle(fb: &mut Framebuffer, cx: f32, cy: f32, r: f32, color: Vec3, alpha: f32) {
+    for py in (cy - r - 1.0) as i32..=(cy + r + 1.0) as i32 {
+        for px in (cx - r - 1.0) as i32..=(cx + r + 1.0) as i32 {
+            let d = ((px as f32 + 0.5 - cx).powi(2) + (py as f32 + 0.5 - cy).powi(2)).sqrt();
+            let a = (r - d + 0.5).clamp(0.0, 1.0);
+            if a > 0.0 {
+                fb.blend(px, py, color, a * alpha);
+            }
+        }
+    }
+}
+
+/// Burbuja de dialogo: rectangulo redondeado de `w` x `h` centrado en
+/// (cx, cy) con una colita que apunta a `tail`. Se dibuja con una funcion de
+/// distancia (negativa adentro), lo que da el borde y el suavizado gratis.
+#[allow(clippy::too_many_arguments)]
+pub fn bubble(fb: &mut Framebuffer, cx: f32, cy: f32, w: f32, h: f32, tail: (f32, f32), fill: Vec3, border: Vec3, alpha: f32) {
+    let r = (h * 0.5).min(14.0);
+    let bottom = cy + h * 0.5;
+    let (tx, tip) = tail;
+    let tail_len = (tip - bottom).max(1.0);
+    let y1 = bottom.max(tip) as i32 + 1;
+    for py in (cy - h * 0.5 - 1.0) as i32..=y1 {
+        for px in (cx - w * 0.5 - 1.0) as i32..=(cx + w * 0.5 + 1.0) as i32 {
+            let (x, y) = (px as f32 + 0.5, py as f32 + 0.5);
+            let qx = (x - cx).abs() - w * 0.5 + r;
+            let qy = (y - cy).abs() - h * 0.5 + r;
+            let mut sd = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - r;
+            if y > bottom - 3.0 && y <= tip {
+                let half = 9.0 * (1.0 - (y - bottom).max(0.0) / tail_len);
+                sd = sd.min((x - tx).abs() - half);
+            }
+            let a = (0.5 - sd).clamp(0.0, 1.0);
+            if a <= 0.0 {
+                continue;
+            }
+            let (color, opacity) = if sd > -2.0 { (border, 1.0) } else { (fill, 0.82) };
+            fb.blend(px, py, color, a * opacity * alpha);
+        }
+    }
+}
