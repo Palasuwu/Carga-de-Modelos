@@ -2,6 +2,11 @@
 
 Cuatro galaxias, conectadas por agujeros negros, que se exploran con la nave que modelamos en Blender. Todo el 3D (transformaciones, recorte, rasterizado, profundidad y shaders) está hecho a mano en Rust. `minifb` solo abre la ventana, lee el teclado y el mouse y muestra el framebuffer; cumple el mismo papel que raylib en el enunciado.
 
+
+Link al video 
+
+https://youtu.be/ehAQc8xESdo 
+
 ![Vuelo hacia el sol](render.png)
 
 ![Mapa del sistema](mapa.png)
